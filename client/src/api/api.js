@@ -2,24 +2,19 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform, NativeModules } from 'react-native';
 import Constants from 'expo-constants';
 
-const FALLBACK_IP = '192.168.209.20';
+// Known laptop IPs (laptop switches between these Wi-Fi networks).
+// The app probes all of them and uses whichever one answers.
+const KNOWN_LAPTOP_IPS = [
+  '10.218.113.105', // Wi-Fi: JanM (phone hotspot)
+  '192.168.209.20', // Wi-Fi: AH_301
+];
+const API_PORT = 5000;
+const PROBE_TIMEOUT_MS = 3000;
 
 const IPV4_REGEX = /^\d+\.\d+\.\d+\.\d+$/;
 
-export const getHostIp = () => {
-  if (Platform.OS === 'web') {
-    if (typeof window !== 'undefined' && window.location && window.location.hostname) {
-      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        return 'localhost';
-      }
-      if (/^\d+\.\d+\.\d+\.\d+$/.test(window.location.hostname)) {
-        return window.location.hostname;
-      }
-      return FALLBACK_IP;
-    }
-    return 'localhost';
-  }
-  // Expo dev server address (e.g. "192.168.1.5:8081") = laptop IP running the backend
+// IP of the machine running Metro, when Expo exposes it (not available in --tunnel mode)
+const getDevServerIp = () => {
   try {
     const hostUri = Constants.expoConfig?.hostUri || Constants.expoGoConfig?.debuggerHost;
     const host = hostUri ? hostUri.split(':')[0] : null;
@@ -31,33 +26,67 @@ export const getHostIp = () => {
   }
   try {
     const scriptURL = NativeModules?.SourceCode?.scriptURL;
-    if (scriptURL) {
-      const match = scriptURL.match(/:\/\/([a-zA-Z0-9.-]+):/);
-      if (match && match[1] && match[1] !== 'localhost' && match[1] !== '127.0.0.1') {
-        if (/^\d+\.\d+\.\d+\.\d+$/.test(match[1])) {
-          return match[1];
-        }
-      }
+    const match = scriptURL && scriptURL.match(/:\/\/([a-zA-Z0-9.-]+):/);
+    if (match && IPV4_REGEX.test(match[1]) && match[1] !== '127.0.0.1') {
+      return match[1];
     }
   } catch (e) {
     // fallback
   }
-  return FALLBACK_IP;
+  return null;
 };
 
-export const getApiUrl = () => {
-  const host = getHostIp();
-  return `http://${host}:5000/api`;
+export const getCandidateHosts = () => {
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.hostname) {
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') return ['localhost'];
+    if (IPV4_REGEX.test(hostname)) return [hostname];
+  }
+  const hosts = [getDevServerIp(), ...KNOWN_LAPTOP_IPS].filter(Boolean);
+  return [...new Set(hosts)];
 };
+
+export const getHostIp = () => getCandidateHosts()[0];
+
+export const getApiUrl = () => `http://${getHostIp()}:${API_PORT}/api`;
+
+const probeHost = async (host) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`http://${host}:${API_PORT}/api/health`, { signal: controller.signal });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    return `http://${host}:${API_PORT}/api`;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// Resolves with the first reachable API url, or null if none answer
+const findReachableApiUrl = (hosts) =>
+  new Promise((resolve) => {
+    let pending = hosts.length;
+    if (pending === 0) resolve(null);
+    hosts.forEach((host) => {
+      probeHost(host)
+        .then(resolve)
+        .catch(() => {
+          pending -= 1;
+          if (pending === 0) resolve(null);
+        });
+    });
+  });
 
 class ApiService {
   constructor() {
     this.customBaseUrl = null;
+    this.resolvedBaseUrl = null;
+    this.resolving = null;
     this.token = null;
   }
 
   get baseUrl() {
-    return this.customBaseUrl || getApiUrl();
+    return this.customBaseUrl || this.resolvedBaseUrl || getApiUrl();
   }
 
   setBaseUrl(url) {
@@ -68,7 +97,23 @@ class ApiService {
     this.token = token;
   }
 
-  async request(endpoint, options = {}) {
+  // Find which laptop IP the backend is reachable on (shared by concurrent requests)
+  async resolveBaseUrl() {
+    if (!this.resolving) {
+      this.resolving = findReachableApiUrl(getCandidateHosts()).then((url) => {
+        this.resolving = null;
+        if (url) this.resolvedBaseUrl = url;
+        return url;
+      });
+    }
+    return this.resolving;
+  }
+
+  async request(endpoint, options = {}, isRetry = false) {
+    if (!this.customBaseUrl && !this.resolvedBaseUrl) {
+      await this.resolveBaseUrl();
+    }
+
     const url = `${this.baseUrl}${endpoint}`;
     const headers = {
       'Content-Type': 'application/json',
@@ -80,31 +125,37 @@ class ApiService {
     const timeoutMs = options.timeout || 12000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+    let response;
     try {
-      const response = await fetch(url, {
+      response = await fetch(url, {
         ...options,
         headers,
         signal: controller.signal,
       });
-      clearTimeout(timer);
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message || `Request failed with status ${response.status}`);
-      }
-
-      return data;
     } catch (err) {
       clearTimeout(timer);
-      if (err.name === 'AbortError' || controller.signal.aborted) {
-        const msg = `Connection timeout connecting to ${url}. Please verify both phone and laptop are on the same Wi-Fi.`;
-        console.warn(`[API TIMEOUT]`, msg);
-        throw new Error(msg);
+      // Could not reach the server: laptop may have switched Wi-Fi, so re-detect once and retry
+      if (!isRetry && !this.customBaseUrl) {
+        const previousUrl = this.resolvedBaseUrl;
+        this.resolvedBaseUrl = null;
+        const newUrl = await this.resolveBaseUrl();
+        if (newUrl && newUrl !== previousUrl) {
+          return this.request(endpoint, options, true);
+        }
       }
-      console.warn(`[API ERROR] ${options.method || 'GET'} ${url}:`, err.message);
-      throw err;
+      const msg = `Cannot connect to server (tried ${getCandidateHosts().join(', ')}). Make sure the backend is running and phone & laptop are on the same Wi-Fi.`;
+      console.warn('[API CONNECTION]', `${options.method || 'GET'} ${url}:`, err.message);
+      throw new Error(msg);
     }
+    clearTimeout(timer);
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || `Request failed with status ${response.status}`);
+    }
+
+    return data;
   }
 
   // Auth endpoints
