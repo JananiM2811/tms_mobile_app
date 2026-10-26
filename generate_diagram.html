@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>System Workflow Flowchart</title>
+<style>
+  body {
+    margin: 0;
+    padding: 30px;
+    background: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  #canvas-container {
+    background: #ffffff;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    border-radius: 8px;
+    padding: 10px;
+  }
+</style>
+</head>
+<body>
+  <div id="canvas-container">
+    <canvas id="flowchartCanvas" width="1350" height="780"></canvas>
+  </div>
+  <script>
+    const canvas = document.getElementById('flowchartCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // High quality background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = '#1e293b';
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 20px "Segoe UI", Arial, sans-serif';
+
+    // Helper: Rounded Rectangle
+    function drawBox(x, y, w, h, textLines, isHeader = false) {
+      ctx.save();
+      ctx.strokeStyle = isHeader ? '#2563eb' : '#334155';
+      ctx.lineWidth = isHeader ? 3 : 2;
+      ctx.fillStyle = isHeader ? '#eff6ff' : '#ffffff';
+
+      // Rounded corners
+      const r = 8;
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Text
+      ctx.fillStyle = isHeader ? '#1e40af' : '#0f172a';
+      ctx.font = isHeader ? 'bold 20px Arial' : 'bold 16px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const lineSpacing = 22;
+      const startY = y + (h / 2) - ((textLines.length - 1) * lineSpacing) / 2;
+      textLines.forEach((line, i) => {
+        ctx.fillText(line, x + w / 2, startY + (i * lineSpacing));
+      });
+      ctx.restore();
+    }
+
+    // Helper: Diamond (Decision)
+    function drawDiamond(cx, cy, w, h, textLines) {
+      ctx.save();
+      ctx.strokeStyle = '#d97706';
+      ctx.lineWidth = 2.5;
+      ctx.fillStyle = '#fffbeb';
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - h / 2);
+      ctx.lineTo(cx + w / 2, cy);
+      ctx.lineTo(cx, cy + h / 2);
+      ctx.lineTo(cx - w / 2, cy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#92400e';
+      ctx.font = 'bold 15px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const lineSpacing = 20;
+      const startY = cy - ((textLines.length - 1) * lineSpacing) / 2;
+      textLines.forEach((line, i) => {
+        ctx.fillText(line, cx, startY + (i * lineSpacing));
+      });
+      ctx.restore();
+    }
+
+    // Helper: Arrow
+    function drawArrow(fromX, fromY, toX, toY, label = '') {
+      ctx.save();
+      ctx.strokeStyle = '#475569';
+      ctx.fillStyle = '#475569';
+      ctx.lineWidth = 2.2;
+
+      ctx.beginPath();
+      ctx.moveTo(fromX, fromY);
+      ctx.lineTo(toX, toY);
+      ctx.stroke();
+
+      // Arrowhead
+      const headlen = 10;
+      const angle = Math.atan2(toY - fromY, toX - fromX);
+      ctx.beginPath();
+      ctx.moveTo(toX, toY);
+      ctx.lineTo(toX - headlen * Math.cos(angle - Math.PI / 7), toY - headlen * Math.sin(angle - Math.PI / 7));
+      ctx.lineTo(toX - headlen * Math.cos(angle + Math.PI / 7), toY - headlen * Math.sin(angle + Math.PI / 7));
+      ctx.closePath();
+      ctx.fill();
+
+      // Label if any
+      if (label) {
+        ctx.fillStyle = '#b45309';
+        ctx.font = 'bold 14px Arial';
+        const midX = (fromX + toX) / 2;
+        const midY = (fromY + toY) / 2;
+        ctx.fillText(label, midX + 8, midY - 6);
+      }
+      ctx.restore();
+    }
+
+    // Helper: Orthogonal Path Arrow
+    function drawPolyArrow(points, label = '') {
+      ctx.save();
+      ctx.strokeStyle = '#475569';
+      ctx.fillStyle = '#475569';
+      ctx.lineWidth = 2.2;
+
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+      ctx.stroke();
+
+      const last = points[points.length - 1];
+      const prev = points[points.length - 2];
+      const headlen = 10;
+      const angle = Math.atan2(last.y - prev.y, last.x - prev.x);
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(last.x - headlen * Math.cos(angle - Math.PI / 7), last.y - headlen * Math.sin(angle - Math.PI / 7));
+      ctx.lineTo(last.x - headlen * Math.cos(angle + Math.PI / 7), last.y - headlen * Math.sin(angle + Math.PI / 7));
+      ctx.closePath();
+      ctx.fill();
+
+      if (label) {
+        ctx.fillStyle = '#047857';
+        ctx.font = 'bold 14px Arial';
+        ctx.fillText(label, points[0].x + 12, points[0].y - 8);
+      }
+      ctx.restore();
+    }
+
+    // ================= DRAW FLOWCHART =================
+
+    // Title at the top
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('Complaint & Ticket Management System - Workflow Architecture', canvas.width / 2, 45);
+
+    // Section 1: User (Complainant) on Left (X: 60 - 360)
+    drawBox(80, 80, 260, 50, ['User (Complainant)'], true);
+    drawArrow(210, 130, 210, 175);
+
+    drawBox(80, 175, 260, 60, ['1. Access System', '(Login / Register)']);
+    drawArrow(210, 235, 210, 280);
+
+    drawBox(80, 280, 260, 60, ['2. Submit Complaint', '(Category, Title, Evidence)']);
+    drawArrow(210, 340, 210, 390);
+
+    drawDiamond(210, 445, 200, 100, ['Complaint', 'Submitted?']);
+
+    // Yes branch goes down
+    drawPolyArrow([
+      { x: 210, y: 495 },
+      { x: 210, y: 560 }
+    ]);
+    ctx.fillStyle = '#047857';
+    ctx.font = 'bold 15px Arial';
+    ctx.fillText('Yes', 225, 525);
+
+    drawBox(80, 560, 260, 65, ['3. View & Track', 'Complaint Status', '(Open, Assigned, etc.)']);
+
+    // No branch loops back to submit
+    drawPolyArrow([
+      { x: 110, y: 445 },
+      { x: 40, y: 445 },
+      { x: 40, y: 310 },
+      { x: 80, y: 310 }
+    ]);
+    ctx.fillStyle = '#dc2626';
+    ctx.font = 'bold 15px Arial';
+    ctx.fillText('No (Error)', 45, 435);
+
+    // Connecting Arrow from User submitting to Staff viewing
+    drawPolyArrow([
+      { x: 310, y: 445 },
+      { x: 500, y: 445 },
+      { x: 500, y: 280 },
+      { x: 540, y: 280 }
+    ]);
+    ctx.fillStyle = '#2563eb';
+    ctx.font = 'bold 13px Arial';
+    ctx.fillText('Ticket Queued', 420, 435);
+
+    // Section 2: Staff / Admin on Right (X: 540 - 800)
+    drawBox(540, 80, 260, 50, ['Staff (Admin / Technician)'], true);
+    drawArrow(670, 130, 670, 175);
+
+    drawBox(540, 175, 260, 55, ['4. Staff Login', '(Role-Based Auth)']);
+    drawArrow(670, 230, 670, 275);
+
+    drawBox(540, 275, 260, 60, ['5. View & Filter', 'Complaints Dashboard']);
+    drawArrow(670, 335, 670, 380);
+
+    drawBox(540, 380, 260, 60, ['6. Assign Complaint', '(To Staff / Dept Tech)']);
+    drawArrow(670, 440, 670, 485);
+
+    drawBox(540, 485, 260, 60, ['7. Update Complaint Status', '& Add Resolution Notes']);
+    drawArrow(670, 545, 670, 590);
+
+    // Decision Diamond: Complaint Resolved?
+    drawDiamond(670, 650, 220, 100, ['Complaint', 'Resolved?']);
+
+    // If No: loop back to Update Status
+    drawPolyArrow([
+      { x: 780, y: 650 },
+      { x: 840, y: 650 },
+      { x: 840, y: 515 },
+      { x: 800, y: 515 }
+    ]);
+    ctx.fillStyle = '#dc2626';
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText('No (In Progress)', 850, 580);
+
+    // If Yes: send User Notification & update tracking
+    drawPolyArrow([
+      { x: 560, y: 650 },
+      { x: 380, y: 650 },
+      { x: 380, y: 595 },
+      { x: 340, y: 595 }
+    ]);
+    ctx.fillStyle = '#047857';
+    ctx.font = 'bold 15px Arial';
+    ctx.fillText('Yes', 480, 640);
+    ctx.fillStyle = '#1e40af';
+    ctx.font = 'bold 13px Arial';
+    ctx.fillText('8. Send User Notification', 385, 630);
+
+    // Section 3: Admin Reports & Analytics (Right-most panel)
+    drawBox(940, 175, 240, 50, ['Admin Analytics & Reports'], true);
+    drawPolyArrow([
+      { x: 800, y: 200 },
+      { x: 940, y: 200 }
+    ]);
+    ctx.fillStyle = '#475569';
+    ctx.font = 'bold 13px Arial';
+    ctx.fillText('Export / View', 835, 190);
+
+    drawBox(940, 265, 240, 65, ['• Performance Metrics', '• Resolution Time SLA', '• Excel / CSV Reports']);
+    drawArrow(1060, 225, 1060, 265);
+
+    // Expose download trigger
+    function downloadPNG() {
+      const link = document.createElement('a');
+      link.download = 'system_workflow_diagram.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+    window.downloadPNG = downloadPNG;
+  </script>
+  <div style="margin-top: 20px;">
+    <button id="downloadBtn" onclick="downloadPNG()" style="padding: 12px 24px; font-size: 16px; font-weight: bold; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer;">
+      ⬇️ Download PNG Image
+    </button>
+  </div>
+</body>
+</html>
